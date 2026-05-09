@@ -4,12 +4,13 @@ import time
 import json
 import random
 import asyncio
+import hashlib
 import requests
 
 from io import BytesIO
-from PIL import Image, ImageFilter, ImageOps
-import pytesseract
+from PIL import Image, ImageFilter
 import numpy as np
+from scipy.fft import dct  # for perceptual hashing
 from tqdm import tqdm
 from playwright.async_api import async_playwright
 
@@ -47,66 +48,197 @@ MIN_HEIGHT = 400   # pixels
 MIN_FILE_SIZE = 30_000   # bytes (~30 KB) — filters out tiny/blurry images
 
 # =========================================================
-# TEXT DETECTION SETTINGS
-# Images with too many detected characters are rejected.
-# OCR runs on a small grayscale version for speed.
-# Raise MAX_TEXT_CHARS to be more lenient (allow some text),
-# lower it to be stricter (only accept near-zero text).
+# TEXT DETECTION SETTINGS (pixel-based — no OCR needed)
 # =========================================================
-MAX_TEXT_CHARS = 15   # max OCR characters allowed in the whole image
+
+# How much of a strip (top/bottom/sides) to scan — 0.15 = 15% of image height
+TEXT_STRIP_RATIO   = 0.15
+
+# Edge density threshold — strips above this are likely text bars
+# Range 0.0–1.0. Lower = stricter. 0.08 works well for news tickers.
+EDGE_DENSITY_THRESH = 0.08
+
+# Horizontal variance threshold — text rows have alternating dark/light pixels
+# i.e. high variance along horizontal axis
+HORIZ_VAR_THRESH   = 18.0
+
+# What fraction of strip rows must be "text-like" to reject the whole image
+TEXT_ROW_FRACTION  = 0.35   # 35% of rows in the strip look like text → reject
+
 
 # =========================================================
-# TEXT DETECTION — rejects images with news tickers,
-# watermarks, captions, or heavy Urdu/English overlays.
-# Uses Tesseract OCR on a small greyscale version for speed.
+# TEXT DETECTION — pixel / edge based
+# ─────────────────────────────────────────────────────────
+# Strategy: text (news tickers, watermarks, Urdu overlays,
+# captions) always creates dense horizontal edge patterns
+# in the top/bottom/side strips of Pakistani news images.
+# We detect those patterns without any OCR.
+#
+# Three signals combined:
+#   1. Edge density  — Sobel edges / total pixels in strip
+#   2. Horizontal variance — alternating dark↔light columns
+#   3. Uniform-color band — solid-color ticker backgrounds
 # =========================================================
+
+def _strip(arr: np.ndarray, ratio: float, side: str) -> np.ndarray:
+    """Extract a strip from top, bottom, left, or right of a grayscale array."""
+    h, w = arr.shape
+    n = max(1, int(h * ratio)) if side in ("top", "bottom") else max(1, int(w * ratio))
+    if side == "top":    return arr[:n, :]
+    if side == "bottom": return arr[h - n:, :]
+    if side == "left":   return arr[:, :n]
+    if side == "right":  return arr[:, w - n:]
+
+
+def _edge_density(strip: np.ndarray) -> float:
+    """Fraction of pixels that are strong edges (Sobel magnitude > 30)."""
+    from PIL import Image as _Image, ImageFilter as _IF
+    pil = _Image.fromarray(strip)
+    edges = np.array(pil.filter(_IF.FIND_EDGES))
+    return float((edges > 30).sum()) / edges.size
+
+
+def _horiz_variance(strip: np.ndarray) -> float:
+    """Mean variance of pixel values along each row — high in text strips."""
+    if strip.shape[0] == 0:
+        return 0.0
+    return float(np.mean(np.var(strip.astype(float), axis=1)))
+
+
+def _is_uniform_band(strip: np.ndarray, tol: int = 18) -> bool:
+    """True if the strip is a near-solid colour band (common ticker background)."""
+    return float(np.std(strip.astype(float))) < tol
+
+
+def strip_has_text(strip: np.ndarray) -> bool:
+    """
+    Returns True if the strip looks like it contains overlaid text.
+    Combines edge density + horizontal variance + uniform-band check.
+    """
+    ed  = _edge_density(strip)
+    hv  = _horiz_variance(strip)
+    uni = _is_uniform_band(strip)
+
+    # Uniform colour band with moderate edges → solid ticker bar (e.g. GEO red bar)
+    if uni and ed > 0.03:
+        return True
+
+    # High edge density AND high horizontal variance → text characters
+    if ed > EDGE_DENSITY_THRESH and hv > HORIZ_VAR_THRESH:
+        return True
+
+    return False
+
 
 def has_too_much_text(image_bytes: bytes) -> bool:
     """
-    Returns True if the image contains more than MAX_TEXT_CHARS
-    characters of detectable text (English or Urdu/Arabic script).
-    Runs OCR on a shrunken greyscale copy — fast enough per image.
+    Analyses the image's border strips (top, bottom, left, right).
+    Returns True if any strip is detected as a text/ticker overlay.
+    No external OCR engine required — works on any font or script,
+    including Urdu, Arabic, and stylised news-channel graphics.
     """
     try:
         img = Image.open(BytesIO(image_bytes)).convert("L")  # greyscale
 
-        # Shrink to max 800px wide — OCR doesn't need full resolution
-        max_side = 800
-        if img.width > max_side:
-            ratio = max_side / img.width
-            img = img.resize(
-                (max_side, int(img.height * ratio)),
-                Image.LANCZOS
-            )
+        # Downscale for speed — analysis doesn't need full resolution
+        max_w = 600
+        if img.width > max_w:
+            scale = max_w / img.width
+            img = img.resize((max_w, int(img.height * scale)), Image.LANCZOS)
 
-        # Sharpen edges slightly — helps OCR on soft images
-        img = img.filter(ImageFilter.SHARPEN)
+        arr = np.array(img)
 
-        # Run OCR for both Latin and Arabic/Urdu scripts
-        # osd = no orientation detection (faster)
-        custom_config = r"--oem 3 --psm 11 -l eng+urd"
-        text = pytesseract.image_to_string(img, config=custom_config)
-
-        # Count only non-whitespace characters
-        char_count = len(text.replace(" ", "").replace("\n", "").strip())
-
-        if char_count > MAX_TEXT_CHARS:
-            print(f"  [text-skip] {char_count} chars detected — image rejected")
-            return True
+        for side in ("top", "bottom", "left", "right"):
+            strip = _strip(arr, TEXT_STRIP_RATIO, side)
+            if strip_has_text(strip):
+                print(f"  [text-skip] text overlay detected on {side} strip")
+                return True
 
         return False
 
     except Exception as e:
-        # If OCR fails, don't block the image
         print(f"  [text-check error] {e} — allowing image")
         return False
+
+
+# =========================================================
+# DUPLICATE DETECTION — perceptual hash (pHash)
+# ─────────────────────────────────────────────────────────
+# MD5 on raw bytes catches exact duplicates (same file).
+# pHash catches visually identical images even if they have
+# different compression, slight crop, or resize applied.
+#
+# How pHash works:
+#   1. Shrink image to 32×32 greyscale
+#   2. Apply DCT (via numpy) — like JPEG compression
+#   3. Keep top-left 8×8 = 64 low-frequency coefficients
+#   4. Hash = 64-bit string: each bit = above/below median
+#
+# Two images are duplicates if their pHash differs by
+# fewer than PHASH_THRESHOLD bits (Hamming distance).
+# =========================================================
+
+PHASH_THRESHOLD = 8   # bits difference allowed (0=exact, 10=very similar)
+
+
+def compute_phash(image_bytes: bytes) -> str | None:
+    """Returns a 64-char binary string (pHash) for the image, or None on error."""
+    try:
+        img = Image.open(BytesIO(image_bytes)).convert("L").resize((32, 32), Image.LANCZOS)
+        arr = np.array(img, dtype=float)
+
+        # 2D DCT via row-then-column 1D DCTs
+        dct2d = dct(dct(arr, axis=0, norm="ortho"), axis=1, norm="ortho")
+
+        # Top-left 8×8 block (low frequencies)
+        low = dct2d[:8, :8].flatten()
+        median = np.median(low)
+
+        return "".join("1" if v > median else "0" for v in low)
+
+    except Exception:
+        return None
+
+
+def hamming(a: str, b: str) -> int:
+    """Bit-level Hamming distance between two equal-length binary strings."""
+    return sum(x != y for x, y in zip(a, b))
+
+
+def is_duplicate(image_bytes: bytes, seen_hashes: list[str]) -> bool:
+    """
+    Returns True if image is too similar to any previously saved image.
+    Also appends the new hash to seen_hashes if it passes.
+    """
+    # ── Layer 1: exact byte hash (fastest) ────────────────
+    md5 = hashlib.md5(image_bytes).hexdigest()
+    if md5 in seen_hashes:
+        print("  [dup-skip] exact duplicate (MD5 match)")
+        return True
+
+    # ── Layer 2: perceptual hash (catches resized/recompressed dupes) ──
+    ph = compute_phash(image_bytes)
+    if ph is not None:
+        for existing_ph in seen_hashes:
+            if len(existing_ph) == 64:          # pHash entries are 64 chars
+                dist = hamming(ph, existing_ph)
+                if dist <= PHASH_THRESHOLD:
+                    print(f"  [dup-skip] visually similar image (pHash dist={dist})")
+                    return True
+
+    # Not a duplicate — register both hashes for future comparisons
+    seen_hashes.append(md5)
+    if ph is not None:
+        seen_hashes.append(ph)
+
+    return False
 
 
 # =========================================================
 # DOWNLOAD IMAGE — with content-type + HD dimension check
 # =========================================================
 
-def download_image(img_url: str, save_path: str) -> bool:
+def download_image(img_url: str, save_path: str, seen_hashes: list[str]) -> bool:
     try:
         response = requests.get(
             img_url,
@@ -152,6 +284,10 @@ def download_image(img_url: str, save_path: str) -> bool:
 
         # ── TEXT CHECK: reject images with overlaid text ──
         if has_too_much_text(data):
+            return False
+
+        # ── DUPLICATE CHECK: reject visually identical images ──
+        if is_duplicate(data, seen_hashes):
             return False
 
         with open(save_path, "wb") as f:
@@ -237,62 +373,111 @@ async def scrape_person(page, person_key: str, search_query: str):
         except Exception:
             pass
 
-    # ---------------------------------------------------------
-    # Scroll to load more images (20 scrolls)
-    # ---------------------------------------------------------
-    for _ in range(20):
+    # Initial scroll — load first batch before entering the download loop
+    print("  🔽 Initial scroll to load first batch...")
+    for _ in range(5):
         await page.mouse.wheel(0, 5000)
-        await page.wait_for_timeout(random.randint(1200, 2200))
-
-        # Click "Show more results" button if present
-        for label in ["Show more results", "More results"]:
-            try:
-                btn = page.get_by_text(label, exact=False).first
-                if await btn.is_visible(timeout=500):
-                    await btn.click()
-                    await page.wait_for_timeout(1500)
-            except Exception:
-                pass
-
-    # ---------------------------------------------------------
-    # Extract URLs from the full page source (fast & reliable)
-    # ---------------------------------------------------------
-    html = await page.content()
-    candidate_urls = extract_image_urls(html)
-    print(f"  Candidate image URLs found: {len(candidate_urls)}")
-
-    if not candidate_urls:
-        print("  ⚠️  No URLs extracted — falling back to thumbnail click method")
-        candidate_urls = await _click_method_fallback(page)
+        await page.wait_for_timeout(random.randint(1200, 2000))
 
     downloaded = existing
-    used_urls:  set[str] = set()
-    progress    = tqdm(total=MAX_IMAGES_PER_PERSON, initial=existing, desc=person_key)
+    skipped    = 0
+    used_urls:   set[str]  = set()
+    seen_hashes: list[str] = []   # fresh per person — MD5 + pHash of every saved image
 
-    for img_url in candidate_urls:
+    progress = tqdm(
+        total=MAX_IMAGES_PER_PERSON,
+        initial=existing,
+        desc=person_key,
+        unit="img",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} saved [{elapsed}]"
+    )
 
-        if downloaded >= MAX_IMAGES_PER_PERSON:
-            break
+    scroll_round      = 0
+    max_scroll_rounds = 10          # scroll up to 10 extra rounds if needed
+    no_new_url_streak = 0           # how many rounds gave zero new URLs
 
-        if img_url in used_urls:
-            continue
+    while downloaded < MAX_IMAGES_PER_PERSON:
 
-        filename  = f"{person_key}_{downloaded + 1:04d}.jpg"
-        save_path = os.path.join(save_dir, filename)
+        # ── Fetch all URLs visible on page right now ──────
+        html           = await page.content()
+        all_urls       = extract_image_urls(html)
+        new_urls       = [u for u in all_urls if u not in used_urls]
 
-        success = download_image(img_url, save_path)
+        if not new_urls and scroll_round == 0:
+            # First round found nothing — try fallback click method once
+            print("  ⚠️  No URLs from HTML — trying thumbnail click fallback")
+            fallback = await _click_method_fallback(page)
+            new_urls = [u for u in fallback if u not in used_urls]
 
-        if success:
-            used_urls.add(img_url)
-            downloaded += 1
-            progress.update(1)
+        print(f"  [round {scroll_round}] {len(new_urls)} new candidate URLs")
+
+        if not new_urls:
+            no_new_url_streak += 1
+            if no_new_url_streak >= 3 or scroll_round >= max_scroll_rounds:
+                print("  ℹ️  No more new URLs found — stopping early")
+                break
         else:
-            # Clean up empty/bad file
-            if os.path.exists(save_path):
-                os.remove(save_path)
+            no_new_url_streak = 0
+
+        # ── Try downloading every new URL ─────────────────
+        for img_url in new_urls:
+
+            if downloaded >= MAX_IMAGES_PER_PERSON:
+                break
+
+            used_urls.add(img_url)          # mark as seen regardless of outcome
+
+            filename  = f"{person_key}_{downloaded + 1:04d}.jpg"
+            save_path = os.path.join(save_dir, filename)
+
+            success = download_image(img_url, save_path, seen_hashes)
+
+            if success:
+                downloaded += 1
+                progress.update(1)
+                progress.set_postfix(saved=downloaded, skipped=skipped, refresh=True)
+            else:
+                skipped += 1
+                if os.path.exists(save_path):
+                    os.remove(save_path)
+                progress.set_postfix(saved=downloaded, skipped=skipped, refresh=True)
+
+        # ── If still need more, scroll down to load new images
+        if downloaded < MAX_IMAGES_PER_PERSON:
+
+            if scroll_round >= max_scroll_rounds:
+                print("  ℹ️  Max scroll rounds reached — stopping")
+                break
+
+            print(f"  🔽 Need {MAX_IMAGES_PER_PERSON - downloaded} more — scrolling for new images...")
+
+            for _ in range(5):
+                await page.mouse.wheel(0, 5000)
+                await page.wait_for_timeout(random.randint(1000, 1800))
+
+            # Click "Show more results" if present
+            for label in ["Show more results", "More results"]:
+                try:
+                    btn = page.get_by_text(label, exact=False).first
+                    if await btn.is_visible(timeout=500):
+                        await btn.click()
+                        await page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+
+            scroll_round += 1
 
     progress.close()
-    print(f"\n✅ Completed {person_key} — total: {downloaded} images")
+
+    if downloaded < MAX_IMAGES_PER_PERSON:
+        print(
+            f"\n⚠️  Only {downloaded} images saved for {person_key} "
+            f"({skipped} skipped — Google may not have more large face images)"
+        )
+    else:
+        print(f"\n✅ Completed {person_key} — {downloaded} saved, {skipped} skipped")
+    else:
+        print(f"\n✅ Completed {person_key} — {downloaded} saved, {skipped} skipped")
 
 
 # =========================================================
