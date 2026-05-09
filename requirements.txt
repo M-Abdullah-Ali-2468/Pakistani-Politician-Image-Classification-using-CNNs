@@ -1,0 +1,14 @@
+icrawler
+pillow
+opencv-python
+mtcnn
+imagehash
+tqdm
+pandas
+playwright
+requests
+numpy
+scikit-learn
+matplotlib
+tensorflow
+keras
