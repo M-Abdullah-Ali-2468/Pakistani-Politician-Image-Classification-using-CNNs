@@ -18,8 +18,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# pyrefly: ignore [missing-import]
 import cv2
 import numpy as np
+# pyrefly: ignore [missing-import]
 import insightface
 
 
