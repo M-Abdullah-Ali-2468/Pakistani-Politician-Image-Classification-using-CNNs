@@ -1,0 +1,6 @@
+outs:
+- md5: 65e0b923d155830be7441148dcdd709f.dir
+  size: 93064760
+  nfiles: 1440
+  hash: md5
+  path: cropped_faces
