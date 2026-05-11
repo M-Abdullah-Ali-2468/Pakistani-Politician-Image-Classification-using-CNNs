@@ -1,30 +1,81 @@
-from __future__ import annotations
+# ============================================================
+# CLEAN CROPPED DATASET + STANDARDIZE IMAGE SIZE
+# ============================================================
+#
+# PURPOSE:
+#
+#   Load images from:
+#
+#       data/cropped_faces
+#
+#   Clean + standardize them into:
+#
+#       data/final_dataset
+#
+#
+# WHAT THIS SCRIPT DOES:
+#
+#   ✅ keeps minimum 80 images per class
+#   ✅ removes only worst images
+#   ✅ consistent naming
+#   ✅ resizes ALL images to 224x224
+#   ✅ saves CSV cleaning report
+#
+#
+# OUTPUT EXAMPLE:
+#
+#   data/final_dataset/
+#
+#       imran_khan/
+#           imran_khan_0001.jpg
+#           imran_khan_0002.jpg
+#
+#       maryam_nawaz/
+#           maryam_nawaz_0001.jpg
+#
+# ============================================================
 
-import random
-import shutil
+import csv
 from pathlib import Path
+
+# pyrefly: ignore [missing-import]
+import cv2
+import numpy as np
 
 
 # ============================================================
 # PATHS
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path.cwd()
 
-INPUT_DIR = BASE_DIR / "data" / "final_dataset"
+INPUT_DIR = BASE_DIR / "data" / "cropped_faces"
 
-OUTPUT_DIR = BASE_DIR / "data" / "split"
+OUTPUT_DIR = BASE_DIR / "data" / "final_dataset"
+
+OUTPUT_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+CSV_PATH = OUTPUT_DIR / "cleaning_report.csv"
 
 
 # ============================================================
 # SETTINGS
 # ============================================================
 
-TRAIN_RATIO = 0.75
-VAL_RATIO = 0.15
-TEST_RATIO = 0.10
+MIN_IMAGES_PER_CLASS = 80
 
-RANDOM_SEED = 42
+IMAGE_SIZE = (224, 224)
+
+BLUR_THRESHOLD = 35
+
+MIN_BRIGHTNESS = 25
+MAX_BRIGHTNESS = 235
+
+MIN_WIDTH = 160
+MIN_HEIGHT = 160
 
 IMAGE_EXTENSIONS = (
     ".jpg",
@@ -35,24 +86,43 @@ IMAGE_EXTENSIONS = (
 
 
 # ============================================================
-# CREATE OUTPUT DIRECTORIES
+# GLOBAL STATS
 # ============================================================
 
-for split_name in ["train", "val", "test"]:
+GLOBAL_TOTAL = 0
+GLOBAL_SAVED = 0
+GLOBAL_REMOVED = 0
 
-    split_dir = OUTPUT_DIR / split_name
+CSV_ROWS = []
 
-    split_dir.mkdir(
-        parents=True,
-        exist_ok=True
+
+# ============================================================
+# UTILITIES
+# ============================================================
+
+def calculate_blur_score(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    return float(
+        cv2.Laplacian(
+            gray,
+            cv2.CV_64F
+        ).var()
     )
 
 
-# ============================================================
-# RANDOM SEED
-# ============================================================
+def calculate_brightness(image):
 
-random.seed(RANDOM_SEED)
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    return float(np.mean(gray))
 
 
 # ============================================================
@@ -60,14 +130,10 @@ random.seed(RANDOM_SEED)
 # ============================================================
 
 print("\n" + "=" * 70)
-print("DATASET SPLITTING")
+print("CLEANING + STANDARDIZATION")
 print("=" * 70)
 
 politicians = sorted(INPUT_DIR.iterdir())
-
-GLOBAL_TRAIN = 0
-GLOBAL_VAL = 0
-GLOBAL_TEST = 0
 
 for politician_dir in politicians:
 
@@ -78,128 +144,320 @@ for politician_dir in politicians:
 
     print(f"\n[{politician_name}]")
 
-    # ========================================================
-    # LOAD IMAGES
-    # ========================================================
+    output_class_dir = (
+        OUTPUT_DIR / politician_name
+    )
+
+    output_class_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    image_candidates = []
 
     image_files = [
 
-        x for x in politician_dir.iterdir()
+        image_path
 
-        if x.suffix.lower() in IMAGE_EXTENSIONS
-    ]
+        for image_path in politician_dir.iterdir()
 
-    random.shuffle(image_files)
-
-    total_images = len(image_files)
-
-    # ========================================================
-    # SPLIT COUNTS
-    # ========================================================
-
-    train_count = int(
-        total_images * TRAIN_RATIO
-    )
-
-    val_count = int(
-        total_images * VAL_RATIO
-    )
-
-    test_count = (
-        total_images
-        - train_count
-        - val_count
-    )
-
-    # ========================================================
-    # SPLIT
-    # ========================================================
-
-    train_files = image_files[:train_count]
-
-    val_files = image_files[
-        train_count:
-        train_count + val_count
-    ]
-
-    test_files = image_files[
-        train_count + val_count:
+        if image_path.suffix.lower()
+        in IMAGE_EXTENSIONS
     ]
 
     # ========================================================
-    # CREATE CLASS DIRECTORIES
+    # ANALYZE IMAGES
     # ========================================================
 
-    train_output_dir = (
-        OUTPUT_DIR
-        / "train"
-        / politician_name
+    for image_path in image_files:
+
+        GLOBAL_TOTAL += 1
+
+        try:
+
+            image = cv2.imread(
+                str(image_path)
+            )
+
+            # ------------------------------------------------
+            # HARD REJECTION
+            # ------------------------------------------------
+
+            if image is None:
+
+                print(
+                    f"  [SKIP] {image_path.name}"
+                )
+
+                continue
+
+            h, w = image.shape[:2]
+
+            blur_score = calculate_blur_score(
+                image
+            )
+
+            brightness = calculate_brightness(
+                image
+            )
+
+            # ------------------------------------------------
+            # PENALTY SCORE
+            # ------------------------------------------------
+
+            penalty = 0
+
+            # Blur penalty
+            if blur_score < BLUR_THRESHOLD:
+
+                penalty += (
+                    BLUR_THRESHOLD - blur_score
+                )
+
+            # Brightness penalties
+            if brightness < MIN_BRIGHTNESS:
+
+                penalty += (
+                    MIN_BRIGHTNESS - brightness
+                )
+
+            if brightness > MAX_BRIGHTNESS:
+
+                penalty += (
+                    brightness - MAX_BRIGHTNESS
+                )
+
+            # Small resolution penalty
+            if (
+                w < MIN_WIDTH or
+                h < MIN_HEIGHT
+            ):
+
+                penalty += 15
+
+            image_candidates.append({
+
+                "path": image_path,
+
+                "blur": blur_score,
+
+                "brightness": brightness,
+
+                "penalty": penalty,
+
+                "width": w,
+
+                "height": h,
+            })
+
+        except Exception as e:
+
+            print(
+                f"  [ERR] {image_path.name} | {e}"
+            )
+
+    # ========================================================
+    # SORT BY QUALITY
+    # ========================================================
+
+    image_candidates.sort(
+        key=lambda x: x["penalty"]
     )
 
-    val_output_dir = (
-        OUTPUT_DIR
-        / "val"
-        / politician_name
+    total_valid = len(image_candidates)
+
+    removable = max(
+        0,
+        total_valid - MIN_IMAGES_PER_CLASS
     )
 
-    test_output_dir = (
-        OUTPUT_DIR
-        / "test"
-        / politician_name
+    removed_images = (
+        image_candidates[-removable:]
+        if removable > 0
+        else []
     )
 
-    train_output_dir.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    val_output_dir.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    test_output_dir.mkdir(
-        parents=True,
-        exist_ok=True
+    removed_paths = set(
+        x["path"]
+        for x in removed_images
     )
 
     # ========================================================
-    # COPY FILES
+    # SAVE BEST IMAGES
     # ========================================================
 
-    for image_path in train_files:
+    saved_count = 0
+    removed_count = 0
 
-        shutil.copy2(
-            image_path,
-            train_output_dir / image_path.name
+    for item in image_candidates:
+
+        image_path = item["path"]
+
+        # ----------------------------------------------------
+        # REMOVE WORST ONLY
+        # ----------------------------------------------------
+
+        if image_path in removed_paths:
+
+            removed_count += 1
+            GLOBAL_REMOVED += 1
+
+            print(
+                f"  [REMOVED] {image_path.name} "
+                f"| penalty={item['penalty']:.1f}"
+            )
+
+            CSV_ROWS.append({
+
+                "politician": politician_name,
+
+                "original_name": image_path.name,
+
+                "new_name": "",
+
+                "status": "removed",
+
+                "blur": round(
+                    item["blur"], 2
+                ),
+
+                "brightness": round(
+                    item["brightness"], 2
+                ),
+
+                "penalty": round(
+                    item["penalty"], 2
+                ),
+            })
+
+            continue
+
+        # ----------------------------------------------------
+        # LOAD IMAGE AGAIN
+        # ----------------------------------------------------
+
+        image = cv2.imread(
+            str(image_path)
         )
 
-    for image_path in val_files:
+        if image is None:
+            continue
 
-        shutil.copy2(
-            image_path,
-            val_output_dir / image_path.name
+        # ----------------------------------------------------
+        # STANDARDIZE SIZE
+        # ----------------------------------------------------
+
+        resized = cv2.resize(
+            image,
+            IMAGE_SIZE
         )
 
-    for image_path in test_files:
+        # ----------------------------------------------------
+        # CONSISTENT FILENAME
+        # ----------------------------------------------------
 
-        shutil.copy2(
-            image_path,
-            test_output_dir / image_path.name
+        saved_count += 1
+        GLOBAL_SAVED += 1
+
+        new_filename = (
+            f"{politician_name}_"
+            f"{saved_count:04d}.jpg"
         )
 
+        output_path = (
+            output_class_dir / new_filename
+        )
+
+        # ----------------------------------------------------
+        # SAVE IMAGE
+        # ----------------------------------------------------
+
+        cv2.imwrite(
+            str(output_path),
+            resized
+        )
+
+        print(
+            f"  [✓] {new_filename} "
+            f"| saved={saved_count}"
+        )
+
+        CSV_ROWS.append({
+
+            "politician": politician_name,
+
+            "original_name": image_path.name,
+
+            "new_name": new_filename,
+
+            "status": "saved",
+
+            "blur": round(
+                item["blur"], 2
+            ),
+
+            "brightness": round(
+                item["brightness"], 2
+            ),
+
+            "penalty": round(
+                item["penalty"], 2
+            ),
+        })
+
     # ========================================================
-    # STATS
+    # CLASS SUMMARY
     # ========================================================
 
-    GLOBAL_TRAIN += len(train_files)
-    GLOBAL_VAL += len(val_files)
-    GLOBAL_TEST += len(test_files)
+    print("\n" + "-" * 60)
 
-    print(f"  Total : {total_images}")
-    print(f"  Train : {len(train_files)}")
-    print(f"  Val   : {len(val_files)}")
-    print(f"  Test  : {len(test_files)}")
+    print(f"[{politician_name}] SUMMARY")
+
+    print(f"  Valid Images : {total_valid}")
+    print(f"  Saved        : {saved_count}")
+    print(f"  Removed      : {removed_count}")
+
+    print("-" * 60)
+
+
+# ============================================================
+# SAVE CSV REPORT
+# ============================================================
+
+with open(
+    CSV_PATH,
+    mode="w",
+    newline="",
+    encoding="utf-8"
+) as csv_file:
+
+    writer = csv.DictWriter(
+
+        csv_file,
+
+        fieldnames=[
+
+            "politician",
+
+            "original_name",
+
+            "new_name",
+
+            "status",
+
+            "blur",
+
+            "brightness",
+
+            "penalty",
+        ]
+    )
+
+    writer.writeheader()
+
+    writer.writerows(CSV_ROWS)
+
+print(f"\nCSV report saved at:\n{CSV_PATH}")
 
 
 # ============================================================
@@ -207,13 +465,18 @@ for politician_dir in politicians:
 # ============================================================
 
 print("\n" + "=" * 70)
-print("FINAL SPLIT SUMMARY")
+print("FINAL SUMMARY")
 print("=" * 70)
 
-print(f"Train Images : {GLOBAL_TRAIN}")
-print(f"Val Images   : {GLOBAL_VAL}")
-print(f"Test Images  : {GLOBAL_TEST}")
+print(f"Total Images : {GLOBAL_TOTAL}")
+print(f"Saved        : {GLOBAL_SAVED}")
+print(f"Removed      : {GLOBAL_REMOVED}")
+
+print(
+    f"Final Size   : "
+    f"{IMAGE_SIZE[0]}x{IMAGE_SIZE[1]}"
+)
 
 print("=" * 70)
 
-print("\nDataset splitting completed.\n")
+print("\nCleaning completed.\n")
