@@ -10,6 +10,8 @@ requests
 numpy
 scikit-learn
 matplotlib
+seaborn
 tensorflow
 keras
 dagshub
+mlflow
