@@ -1,1 +1,5 @@
 .venv
+test/
+model/
+**/__pycache__/
+*.pyc
