@@ -1,0 +1,53 @@
+artifact_path: mlflow-artifacts:/8cb21d6c45ff4f77b31264298e7bb6ee/models/m-4b0f324f05b1483c8bbd869f3e715d13/artifacts
+flavors:
+  python_function:
+    config:
+      device: null
+    data: data
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pytorch
+    pickle_module_name: mlflow.pytorch.pickle_module
+    python_version: 3.12.13
+  pytorch:
+    code: null
+    model_data: data
+    pytorch_version: 2.10.0+cu128
+is_signature_from_type_hint: false
+metadata:
+  class_names:
+  - ahmed_sharif_chaudhry
+  - asif_ali_zardari
+  - benazir_bhutto
+  - bilawal_bhutto
+  - fazl_ur_rehman
+  - hina_rabbani_khar
+  - imran_khan
+  - khawaja_asif
+  - khawaja_saad_rafique
+  - maryam_nawaz
+  - nawaz_sharif
+  - pervez_musharraf
+  - shah_mahmood_qureshi
+  - shehbaz_sharif
+  - sheikh_rasheed
+  - yousuf_raza_gillani
+mlflow_version: 3.12.0
+model_id: m-4b0f324f05b1483c8bbd869f3e715d13
+model_size_bytes: 102217563
+model_uuid: m-4b0f324f05b1483c8bbd869f3e715d13
+prompts: null
+run_id: 8333bb1ff19c46ccb185001e324653d7
+saved_input_example_info:
+  artifact_path: input_example.json
+  serving_input_path: serving_input_example.json
+  type: ndarray
+signature:
+  inputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float32", "shape": [-1, 3,
+    224, 224]}}]'
+  outputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float32", "shape": [-1,
+    16]}}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2026-05-11 23:16:22.615166'
