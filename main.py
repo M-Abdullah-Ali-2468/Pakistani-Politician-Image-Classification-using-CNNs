@@ -20,4 +20,7 @@ if __name__ == "__main__":
     print("Check data/cropped_faces/ to ensure faces were cropped correctly.")
     print("\n[STEP 6] Split Dataset (Train/Val/Test)")
     print("Run: python scripts/splitting/split_dataset.py")
+    print("\n[STEP 7] Model Serving API")
+    print("Run: cd deployment && uvicorn app.main:app --reload --host 0.0.0.0 --port 7860")
+    print("Or build and run the Docker image for Hugging Face Spaces deployment.")
     print_separator()

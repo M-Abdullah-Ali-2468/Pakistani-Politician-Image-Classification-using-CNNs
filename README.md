@@ -30,3 +30,33 @@ The pipeline is split into multiple automated and manual steps:
 5. **Split Dataset**: Run `python scripts/splitting/split_dataset.py` to create train (75%), val (15%), and test (10%) sets.
 
 You can also run `python main.py` for a quick guide on the steps.
+
+## Model Serving API
+
+The trained model is packaged as a standalone FastAPI container in `deployment/`.
+
+### Run locally
+
+```bash
+cd deployment
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 7860
+```
+
+### Docker
+
+```bash
+docker build -t pakistani-politician-classifier ./deployment
+docker run -p 7860:7860 pakistani-politician-classifier
+```
+
+### Hugging Face Spaces
+
+Create a new Space with the Docker SDK and point it at the `deployment/` directory. The included `deployment/Dockerfile` exposes the API on port `7860`, which matches the Hugging Face Spaces runtime.
+
+### CI/CD
+
+GitHub Actions workflows are included for:
+
+1. CI validation via Python source compilation on pull requests and pushes to `main`.
+2. CD image publishing to GitHub Container Registry on pushes to `main` and version tags.
