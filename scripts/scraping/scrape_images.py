@@ -251,7 +251,7 @@ POLITICIANS = {
         "only Yousuf Raza Gillani official solo image",
         "only Yousuf Raza Gillani high quality face",
         "only Yousuf Raza Gillani single person photo"
-    ]
+    ],
 
 "ahmed_sharif_chaudhry": [
 
@@ -766,9 +766,9 @@ async def _scrape(
 ) -> None:
     """
     3-tier query strategy:
-      Tier 1 — specific "solo face" queries (from POLITICIANS dict)
-      Tier 2 — broader queries (TIER2_TEMPLATES)
-      Tier 3 — very broad fallback (TIER3_TEMPLATES)
+    Tier 1 — specific "solo face" queries (from POLITICIANS dict)
+    Tier 2 — broader queries (TIER2_TEMPLATES)
+    Tier 3 — very broad fallback (TIER3_TEMPLATES)
     Switches tier when zero_rounds threshold is hit.
     Gives up only after Tier 3 exhausted.
     """

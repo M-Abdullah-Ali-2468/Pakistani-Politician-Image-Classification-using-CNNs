@@ -25,6 +25,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pakistani-politician-classifier" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -32,5 +36,5 @@ jobs:
           file: ./deployment/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/pakistani-politician-classifier:latest
-            ghcr.io/${{ github.repository_owner }}/pakistani-politician-classifier:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
