@@ -1,0 +1,5 @@
+outs:
+- md5: f51b3713f891c2df36a77ab1b4f132ac
+  size: 94486643
+  hash: md5
+  path: trained_model.pth

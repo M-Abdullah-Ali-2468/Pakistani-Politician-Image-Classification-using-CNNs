@@ -27,7 +27,43 @@ jobs:
 
       - name: Set image name
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/pakistani-politician-classifier" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          OWNER_LOWER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "name=ghcr.io/${OWNER_LOWER}/pakistani-politician-classifier" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure model exists (DVC/Dagshub)
+        shell: bash
+        env:
+          DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          if [ -f deployment/model/trained_model.pth ]; then
+            echo "Model already present in repository."
+            exit 0
+          fi
+
+          python -m pip install --upgrade pip
+          python -m pip install "dvc[http]>=3,<4"
+
+          DVC_REMOTE_URL="$(git config --file .dvc/config --get remote.origin.url || true)"
+
+          if [ -n "${DAGSHUB_USER}" ] && [ -n "${DAGSHUB_TOKEN}" ]; then
+            dvc remote modify --local origin auth basic || true
+            dvc remote modify --local origin user "${DAGSHUB_USER}" || true
+            dvc remote modify --local origin password "${DAGSHUB_TOKEN}" || true
+          fi
+
+          dvc pull deployment/model/trained_model.pth || true
+
+          if [ ! -f deployment/model/trained_model.pth ] && [ -n "${DVC_REMOTE_URL}" ]; then
+            dvc get "${DVC_REMOTE_URL}" deployment/model/trained_model.pth -o deployment/model/trained_model.pth || true
+          fi
+
+          if [ ! -f deployment/model/trained_model.pth ]; then
+            echo "deployment/model/trained_model.pth not found. Add it to DVC in Dagshub or commit a deployable model path."
+            exit 1
+          fi
 
       - name: Build and push image
         uses: docker/build-push-action@v6
